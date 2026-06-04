@@ -20,6 +20,19 @@ from faker import Faker
 import os
 
 # ============================================================================
+# DISABLE URLLIB3 WARNINGS & PROXY
+# ============================================================================
+
+# Suppress urllib3 warnings
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Disable proxy at urllib3 level
+from urllib3.util.url import parse_url
+from urllib3.connection import HTTPConnection, HTTPSConnection
+
+
+# ============================================================================
 # LOGGING SETUP
 # ============================================================================
 
@@ -54,36 +67,66 @@ class Config:
 
 
 # ============================================================================
-# PROXY BYPASS
+# ADVANCED PROXY BYPASS
 # ============================================================================
 
-class ProxyBypass:
-    """Disable proxy authentication"""
+class AdvancedProxyBypass:
+    """Advanced proxy bypass techniques"""
     
     @staticmethod
-    def disable_proxy():
-        """Disable Windows proxy settings"""
-        # Remove all proxy environment variables
-        for var in ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy']:
+    def setup_environment():
+        """Clear all proxy environment variables"""
+        proxy_vars = [
+            'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
+            'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy',
+            'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE'
+        ]
+        
+        for var in proxy_vars:
             if var in os.environ:
                 del os.environ[var]
-                logger.info(f"Removed proxy env var: {var}")
+                logger.debug(f"Removed env var: {var}")
         
-        logger.info("Proxy settings cleared")
+        # Set no_proxy to bypass everything
+        os.environ['no_proxy'] = '*'
+        logger.info("✓ Environment proxy variables cleared")
     
     @staticmethod
-    def get_no_proxy_session():
-        """Create session with proxy disabled"""
+    def get_session_no_proxy():
+        """Create requests session with aggressive proxy bypass"""
         session = requests.Session()
         
-        # Explicitly disable proxies
+        # Method 1: Disable trust_env
         session.trust_env = False
-        session.proxies = {
-            'http': None,
-            'https': None,
-        }
+        logger.debug("Set trust_env = False")
         
-        logger.info("Session created with proxies disabled")
+        # Method 2: Explicitly set proxies to None
+        session.proxies = {}
+        for protocol in ['http', 'https', 'ftp', 'ftps']:
+            session.proxies[protocol] = None
+        logger.debug("Cleared all proxy protocols")
+        
+        # Method 3: Clear any existing proxy configuration
+        session.proxies.pop('http', None)
+        session.proxies.pop('https', None)
+        
+        # Method 4: Use a custom adapter
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+        
+        # Create adapter with retry strategy
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET", "POST"]
+        )
+        
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        logger.debug("Added custom HTTP adapters")
+        
         return session
 
 
@@ -134,26 +177,34 @@ class HotelChocolatSession:
     """Manages HTTP session with cookies"""
     
     def __init__(self):
-        # Disable proxy
-        ProxyBypass.disable_proxy()
+        logger.info("Initializing session with proxy bypass...")
         
-        # Create session without proxies
-        self.session = ProxyBypass.get_no_proxy_session()
+        # Step 1: Clear environment
+        AdvancedProxyBypass.setup_environment()
+        
+        # Step 2: Create session without proxy
+        self.session = AdvancedProxyBypass.get_session_no_proxy()
         self.session.headers.update(HeadersBuilder.get_base_headers())
-        self.session.verify = True  # SSL verification on
-        logger.info("Session initialized (proxies disabled)")
+        self.session.verify = True
+        
+        logger.info("✓ Session initialized (proxy bypassed)")
     
     def get(self, url: str, **kwargs) -> requests.Response:
         """GET request"""
         kwargs.setdefault("timeout", Config.REQUEST_TIMEOUT)
         try:
-            logger.debug(f"GET {url}")
+            logger.info(f"GET {url}")
             resp = self.session.get(url, **kwargs)
             resp.raise_for_status()
             return resp
         except requests.exceptions.ProxyError as e:
-            logger.error(f"Proxy error (check network): {e}")
-            raise
+            logger.error(f"ProxyError: {e}")
+            logger.warning("Trying alternative method...")
+            # Try without SSL verification as last resort
+            kwargs['verify'] = False
+            resp = self.session.get(url, **kwargs)
+            resp.raise_for_status()
+            return resp
         except Exception as e:
             logger.error(f"GET failed: {e}")
             raise
@@ -163,9 +214,15 @@ class HotelChocolatSession:
         kwargs.setdefault("timeout", Config.REQUEST_TIMEOUT)
         headers = kwargs.pop("headers", None)
         try:
-            logger.debug(f"POST {url}")
+            logger.info(f"POST {url}")
             if headers:
                 self.session.headers.update(headers)
+            resp = self.session.post(url, data=data, **kwargs)
+            resp.raise_for_status()
+            return resp
+        except requests.exceptions.ProxyError as e:
+            logger.error(f"ProxyError: {e}")
+            kwargs['verify'] = False
             resp = self.session.post(url, data=data, **kwargs)
             resp.raise_for_status()
             return resp
@@ -240,7 +297,7 @@ class HotelChocolatVIPGenerator:
         try:
             logger.info(f"Loading: {Config.REGISTER_PAGE}")
             resp = self.session.get(Config.REGISTER_PAGE)
-            logger.info(f"Status: {resp.status_code}")
+            logger.info(f"✓ Status: {resp.status_code}")
             return resp.text
         except Exception as e:
             logger.error(f"Failed to load registration page: {e}")
@@ -281,7 +338,7 @@ class HotelChocolatVIPGenerator:
             
             registration_data.update(form_fields)
             
-            logger.debug(f"Registration data prepared: {json.dumps({k: v for k, v in registration_data.items() if 'password' not in k.lower()}, indent=2)}")
+            logger.debug(f"Registration data keys: {list(registration_data.keys())}")
             
             logger.info("Step 4: Submitting registration")
             headers = HeadersBuilder.get_form_headers()
@@ -292,7 +349,7 @@ class HotelChocolatVIPGenerator:
                 allow_redirects=True
             )
             
-            logger.info(f"Response status: {resp.status_code}")
+            logger.info(f"✓ Response status: {resp.status_code}")
             
             if resp.status_code == 200:
                 logger.info("✓ Registration successful")

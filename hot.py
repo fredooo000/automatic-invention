@@ -17,6 +17,7 @@ import random
 import string
 from bs4 import BeautifulSoup
 from faker import Faker
+import os
 
 # ============================================================================
 # LOGGING SETUP
@@ -50,6 +51,40 @@ class Config:
     def setup_directories(cls):
         """Create output directories"""
         cls.OUTPUT_DIR.mkdir(exist_ok=True)
+
+
+# ============================================================================
+# PROXY BYPASS
+# ============================================================================
+
+class ProxyBypass:
+    """Disable proxy authentication"""
+    
+    @staticmethod
+    def disable_proxy():
+        """Disable Windows proxy settings"""
+        # Remove all proxy environment variables
+        for var in ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy']:
+            if var in os.environ:
+                del os.environ[var]
+                logger.info(f"Removed proxy env var: {var}")
+        
+        logger.info("Proxy settings cleared")
+    
+    @staticmethod
+    def get_no_proxy_session():
+        """Create session with proxy disabled"""
+        session = requests.Session()
+        
+        # Explicitly disable proxies
+        session.trust_env = False
+        session.proxies = {
+            'http': None,
+            'https': None,
+        }
+        
+        logger.info("Session created with proxies disabled")
+        return session
 
 
 # ============================================================================
@@ -99,9 +134,14 @@ class HotelChocolatSession:
     """Manages HTTP session with cookies"""
     
     def __init__(self):
-        self.session = requests.Session()
+        # Disable proxy
+        ProxyBypass.disable_proxy()
+        
+        # Create session without proxies
+        self.session = ProxyBypass.get_no_proxy_session()
         self.session.headers.update(HeadersBuilder.get_base_headers())
-        logger.info("Session initialized")
+        self.session.verify = True  # SSL verification on
+        logger.info("Session initialized (proxies disabled)")
     
     def get(self, url: str, **kwargs) -> requests.Response:
         """GET request"""
@@ -111,6 +151,9 @@ class HotelChocolatSession:
             resp = self.session.get(url, **kwargs)
             resp.raise_for_status()
             return resp
+        except requests.exceptions.ProxyError as e:
+            logger.error(f"Proxy error (check network): {e}")
+            raise
         except Exception as e:
             logger.error(f"GET failed: {e}")
             raise
